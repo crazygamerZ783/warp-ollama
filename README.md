@@ -1,5 +1,5 @@
 # 🚀 Local Ollama Support for Warp Terminal
-##someone please figure out how to get back the respone from the ollama llm
+#someone please figure out how to get back the respone from the ollama llm
 
 Welcome! We are on a mission to bring local LLM support to the Warp Terminal. By integrating Ollama, we want to enable powerful AI features that are private, offline-capable, and don't require a Warp sign-in.
 
