@@ -1499,7 +1499,8 @@ impl AISettings {
             // Sync Ollama config on initialization
             crate::ai::ollama::config::OllamaConfig::set_global(me.ollama_config());
 
-            ctx.subscribe_to_self(|me, event, _ctx| match event {
+            let handle = Self::handle(ctx);
+            ctx.subscribe_to_model(&handle, |me, event, _ctx| match event {
                 AISettingsChangedEvent::OllamaEnabled { .. }
                 | AISettingsChangedEvent::OllamaUrl { .. }
                 | AISettingsChangedEvent::OllamaModel { .. } => {

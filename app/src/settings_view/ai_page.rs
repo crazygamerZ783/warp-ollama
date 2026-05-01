@@ -454,6 +454,9 @@ pub struct AISettingsPageView {
     // Profile views
     profile_views: Vec<ViewHandle<ExecutionProfileView>>,
     add_profile_button: ViewHandle<ActionButton>,
+
+    ollama_url_editor: ViewHandle<EditorView>,
+    ollama_model_editor: ViewHandle<EditorView>,
 }
 
 impl AISettingsPageView {
@@ -1430,6 +1433,37 @@ impl AISettingsPageView {
             conversation_layout_dropdown,
             profile_views,
             add_profile_button,
+
+            ollama_url_editor: {
+                let editor = ctx.add_view(|ctx| {
+                    let mut editor = EditorView::new(SingleLineEditorOptions::default().into(), ctx);
+                    let url = AISettings::as_ref(ctx).ollama_url.clone();
+                    editor.set_buffer_text(&url, ctx);
+                    editor
+                });
+                ctx.subscribe_to_view(&editor, |view, _editor, event, ctx| {
+                    if let EditorEvent::Edited(_) = event {
+                        let text = view.ollama_url_editor.update(ctx, |editor: &mut EditorView, ctx| editor.buffer_text(ctx));
+                        ctx.dispatch_typed_action(&AISettingsPageAction::SetOllamaUrl(text));
+                    }
+                });
+                editor
+            },
+            ollama_model_editor: {
+                let editor = ctx.add_view(|ctx| {
+                    let mut editor = EditorView::new(SingleLineEditorOptions::default().into(), ctx);
+                    let model = AISettings::as_ref(ctx).ollama_model.clone();
+                    editor.set_buffer_text(&model, ctx);
+                    editor
+                });
+                ctx.subscribe_to_view(&editor, |view, _editor, event, ctx| {
+                    if let EditorEvent::Edited(_) = event {
+                        let text = view.ollama_model_editor.update(ctx, |editor: &mut EditorView, ctx| editor.buffer_text(ctx));
+                        ctx.dispatch_typed_action(&AISettingsPageAction::SetOllamaModel(text));
+                    }
+                });
+                editor
+            },
         }
     }
 
@@ -1466,6 +1500,7 @@ impl AISettingsPageView {
             None => {
                 // Full page: all widgets (legacy behavior)
                 widgets.push(Box::new(GlobalAIWidget::default()));
+                widgets.push(Box::new(OllamaWidget::default()));
                 if !FeatureFlag::UsageBasedPricing.is_enabled() {
                     widgets.push(Box::new(UsageWidget::default()));
                 }
@@ -1517,6 +1552,7 @@ impl AISettingsPageView {
             Some(AISubpage::WarpAgent) => {
                 // Oz page: global toggle + Active AI + Input + Other
                 widgets.push(Box::new(GlobalAIWidget::default()));
+                widgets.push(Box::new(OllamaWidget::default()));
                 if ai_settings
                     .intelligent_autosuggestions_enabled_internal
                     .is_supported_on_current_platform()
@@ -2271,6 +2307,9 @@ pub enum AISettingsPageAction {
         pattern: String,
         agent: Option<CLIAgent>,
     },
+    ToggleOllama,
+    SetOllamaUrl(String),
+    SetOllamaModel(String),
 }
 
 impl From<&AISettingsPageAction> for LoginGatedFeature {
@@ -3017,6 +3056,24 @@ impl TypedActionView for AISettingsPageView {
                 });
                 ctx.notify();
             }
+            AISettingsPageAction::ToggleOllama => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.ollama_enabled.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            AISettingsPageAction::SetOllamaUrl(url) => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.ollama_url.set_value(url.clone(), ctx));
+                });
+                ctx.notify();
+            }
+            AISettingsPageAction::SetOllamaModel(model) => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.ollama_model.set_value(model.clone(), ctx));
+                });
+                ctx.notify();
+            }
         }
     }
 }
@@ -3653,6 +3710,126 @@ impl SettingsWidget for UsageWidget {
                     .with_margin_bottom(16.)
                     .finish(),
             ])
+            .finish()
+    }
+}
+
+#[derive(Default)]
+struct OllamaWidget {
+    ollama_toggle: SwitchStateHandle,
+}
+
+impl OllamaWidget {
+    fn render_ollama_input(
+        &self,
+        appearance: &Appearance,
+        label: &'static str,
+        editor: ViewHandle<EditorView>,
+        is_enabled: bool,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let padding = Some(Coords {
+            top: 10.,
+            bottom: 10.,
+            left: 16.,
+            right: 16.,
+        });
+        let editor_style = UiComponentStyles {
+            padding,
+            background: Some(appearance.theme().surface_2().into()),
+            ..Default::default()
+        };
+
+        let label = Text::new_inline(label, appearance.ui_font_family(), CONTENT_FONT_SIZE)
+            .with_color(styles::header_font_color(is_enabled, app).into())
+            .finish();
+
+        let input = appearance
+            .ui_builder()
+            .text_input(editor)
+            .with_style(editor_style)
+            .build()
+            .finish();
+
+        Flex::column()
+            .with_child(Container::new(label).with_margin_bottom(8.).finish())
+            .with_child(input)
+            .finish()
+    }
+}
+
+impl SettingsWidget for OllamaWidget {
+    type View = AISettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "local ollama model"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let ai_settings = AISettings::as_ref(app);
+        let ollama_enabled = *ai_settings.ollama_enabled;
+
+        let ollama_header = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                build_sub_header(
+                    appearance,
+                    "Local Models (Ollama)",
+                    Some(styles::header_font_color(true, app)),
+                )
+                .finish(),
+            )
+            .with_child(
+                Container::new(
+                    appearance
+                        .ui_builder()
+                        .switch(self.ollama_toggle.clone())
+                        .check(ollama_enabled)
+                        .build()
+                        .on_click(move |ctx, _, _| {
+                            ctx.dispatch_typed_action(AISettingsPageAction::ToggleOllama);
+                        })
+                        .finish(),
+                )
+                .with_padding_right(TOGGLE_BUTTON_RIGHT_PADDING)
+                .finish(),
+            )
+            .finish();
+
+        let description = render_ai_setting_description(
+            "Use a local Ollama instance for Warp AI. When enabled, AI features will work offline and bypass Warp servers. Model tool calling support depends on the selected Ollama model.",
+            true,
+            app,
+        );
+
+        let url_input = self.render_ollama_input(
+            appearance,
+            "Ollama URL",
+            view.ollama_url_editor.clone(),
+            ollama_enabled,
+            app,
+        );
+
+        let model_input = self.render_ollama_input(
+            appearance,
+            "Model Name",
+            view.ollama_model_editor.clone(),
+            ollama_enabled,
+            app,
+        );
+
+        Flex::column()
+            .with_child(Container::new(ollama_header).with_margin_bottom(12.).finish())
+            .with_child(Container::new(description).with_margin_bottom(16.).finish())
+            .with_child(Container::new(url_input).with_margin_bottom(16.).finish())
+            .with_child(Container::new(model_input).with_margin_bottom(16.).finish())
             .finish()
     }
 }

@@ -16,6 +16,7 @@ use crate::{
     network::{NetworkStatus, NetworkStatusEvent, NetworkStatusKind},
     report_error,
     server::server_api::ServerApiProvider,
+    settings::{AISettings, AISettingsChangedEvent},
     workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent},
 };
 
@@ -403,6 +404,56 @@ impl ModelsByFeature {
     fn info_for_id(&self, id: &LLMId) -> Option<&LLMInfo> {
         self.agent_mode.info_for_id(id)
     }
+
+    /// Re-injects the local Ollama model into the choices if enabled.
+    /// This is necessary because server updates will not include local models.
+    pub fn reinject_ollama(&mut self) {
+        use super::ollama::config::OllamaConfig;
+        let ollama_config = OllamaConfig::global();
+        if !ollama_config.enabled {
+            return;
+        }
+
+        let ollama_id = OllamaConfig::model_id(&ollama_config.model);
+        let ollama_info = LLMInfo {
+            display_name: format!("Ollama ({})", ollama_config.model),
+            base_model_name: ollama_config.model.clone(),
+            id: ollama_id.clone().into(),
+            reasoning_level: None,
+            usage_metadata: LLMUsageMetadata {
+                request_multiplier: 0, // Free - local inference
+                credit_multiplier: Some(0.0),
+            },
+            description: Some("Local model via Ollama".to_owned()),
+            disable_reason: None,
+            vision_supported: false,
+            spec: None,
+            provider: LLMProvider::Ollama,
+            host_configs: HashMap::new(),
+            discount_percentage: None,
+            context_window: LLMContextWindow::default(),
+        };
+
+        // Inject into agent_mode choices if not already present
+        if !self
+            .agent_mode
+            .choices
+            .iter()
+            .any(|info| info.id.as_str() == ollama_id)
+        {
+            self.agent_mode.choices.insert(0, ollama_info.clone());
+        }
+
+        // Also inject into coding if not present
+        if !self
+            .coding
+            .choices
+            .iter()
+            .any(|info| info.id.as_str() == ollama_id)
+        {
+            self.coding.choices.insert(0, ollama_info);
+        }
+    }
 }
 
 /// Returns the default AvailableLLMs for computer use.
@@ -597,6 +648,16 @@ impl LLMPreferences {
             if let AuthManagerEvent::AuthComplete = event {
                 me.refresh_authed_models(ctx);
             }
+        });
+
+        ctx.subscribe_to_model(&AISettings::handle(ctx), |me, event, ctx| match event {
+            AISettingsChangedEvent::OllamaEnabled { .. }
+            | AISettingsChangedEvent::OllamaUrl { .. }
+            | AISettingsChangedEvent::OllamaModel { .. } => {
+                me.models_by_feature.reinject_ollama();
+                ctx.emit(LLMPreferencesEvent::UpdatedAvailableLLMs);
+            }
+            _ => {}
         });
 
         ctx.subscribe_to_model(&UserWorkspaces::handle(ctx), |me, event, ctx| {
@@ -919,10 +980,6 @@ impl LLMPreferences {
 
     /// Fetches the latest set of models from the server for the currently logged in user, and updates the model.
     pub fn refresh_authed_models(&self, ctx: &mut ModelContext<Self>) {
-        // Don't try to fetch auth'd models if Ollama is the active provider (no server needed)
-        if crate::ai::ollama::config::OllamaConfig::global().enabled {
-            return;
-        }
         // Don't try to fetch auth'd models if the user is not logged in yet.
         if !AuthStateProvider::as_ref(ctx).get().is_logged_in() {
             return;
@@ -944,7 +1001,7 @@ impl LLMPreferences {
         );
     }
 
-    /// No auth required (i.e. to populate the pre-login onboarding picker).
+    /// No auth required (ie. to populate the pre-login onboarding picker).
     fn refresh_public_models(&self, ctx: &mut ModelContext<Self>) {
         let ai_api_client = ServerApiProvider::as_ref(ctx).get_ai_client();
         ctx.spawn(
@@ -956,7 +1013,15 @@ impl LLMPreferences {
                     }
                 }
                 Err(e) => {
-                    report_error!(e.context("Failed to fetch free-tier LLMs from server"));
+                    // Even if fetching fails (e.g. offline), we should ensure Ollama models
+                    // are injected into the default/cached models if Ollama is enabled.
+                    if crate::ai::ollama::config::OllamaConfig::global().enabled {
+                        let mut models = me.models_by_feature.clone();
+                        models.reinject_ollama();
+                        me.on_server_update(models, ctx);
+                    } else {
+                        report_error!(e.context("Failed to fetch free-tier LLMs from server"));
+                    }
                 }
             },
         );
@@ -980,9 +1045,10 @@ impl LLMPreferences {
         }
     }
 
-    fn on_server_update(&mut self, update: ModelsByFeature, ctx: &mut ModelContext<Self>) {
+    fn on_server_update(&mut self, mut update: ModelsByFeature, ctx: &mut ModelContext<Self>) {
         let has_existing_persisted_config = get_cached_models(ctx).is_some();
 
+        update.reinject_ollama();
         let old = std::mem::replace(&mut self.models_by_feature, update);
 
         match serde_json::to_string(&self.models_by_feature) {

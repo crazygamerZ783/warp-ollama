@@ -9,4 +9,3 @@ pub mod config;
 pub mod stream;
 
 pub use client::OllamaClient;
-pub use config::OllamaConfig;

@@ -17,11 +17,6 @@ pub async fn generate_multi_agent_output(
     // Route to local Ollama if the selected model is an Ollama model.
     // This bypasses the Warp server entirely for local inference.
     if crate::ai::ollama::config::OllamaConfig::is_ollama_model_id(params.model.as_str()) {
-        let supported_tools = params
-            .supported_tools_override
-            .take()
-            .unwrap_or_else(|| get_supported_tools(&params));
-
         let mut api_keys = params.api_keys;
         if let Some(api_keys) = &mut api_keys {
             api_keys.allow_use_of_warp_credits = params.allow_use_of_warp_credits_with_byok;

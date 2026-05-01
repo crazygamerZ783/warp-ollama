@@ -811,9 +811,33 @@ impl LoginSlideView {
             },
         );
 
+        let cmd_enter = Keystroke::parse("cmdorctrl-enter").unwrap_or_default();
+        let skip_label = if matches!(self.intention, OnboardingIntention::Terminal) {
+            "Disable Warp Drive"
+        } else {
+            "Disable AI features"
+        };
+        let skip_button = self.skip_button.render(
+            appearance,
+            button::Params {
+                content: button::Content::Label(skip_label.into()),
+                theme: &button::themes::Naked,
+                options: button::Options {
+                    keystroke: Some(cmd_enter),
+                    on_click: Some(Box::new(|ctx, _app, _pos| {
+                        ctx.dispatch_typed_action(LoginSlideAction::ShowSkipDialog);
+                    })),
+                    ..button::Options::default(appearance)
+                },
+            },
+        );
+
         Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(back_button)
+            .with_child(skip_button)
             .finish()
     }
 

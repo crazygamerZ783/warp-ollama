@@ -22,11 +22,6 @@ use super::stream::{
 pub struct OllamaClient;
 
 impl OllamaClient {
-    /// Checks if the given LLMId refers to an Ollama model.
-    pub fn is_ollama_model(model_id: &str) -> bool {
-        OllamaConfig::is_ollama_model_id(model_id)
-    }
-
     /// Sends a request to the local Ollama instance and returns a stream of
     /// `ResponseEvent`s that the Warp conversation pipeline can consume.
     ///
@@ -38,7 +33,17 @@ impl OllamaClient {
         cancellation_rx: oneshot::Receiver<()>,
     ) -> ResponseStream {
         let config = OllamaConfig::global();
-        let ctx = StreamContext::new();
+        
+        log::info!("OLLAMA REQUEST DEBUG: {:#?}", request);
+        
+        let task_id = request
+            .task_context
+            .as_ref()
+            .and_then(|tc| tc.tasks.last())
+            .map(|t| t.id.clone())
+            .unwrap_or_else(|| "".to_string());
+            
+        let ctx = StreamContext::new(task_id);
 
         // Extract user messages from the request to build OpenAI-compatible messages
         let messages = extract_messages_from_request(request);
@@ -76,6 +81,7 @@ impl OllamaClient {
                         ),
                         &ctx.message_id,
                         &ctx.task_id,
+                        true,
                     )),
                     Ok(create_stream_finished_event(&ctx.request_id)),
                 ];
@@ -100,6 +106,7 @@ impl OllamaClient {
                     ),
                     &ctx.message_id,
                     &ctx.task_id,
+                    true,
                 )),
                 Ok(create_stream_finished_event(&ctx.request_id)),
             ];
@@ -122,6 +129,7 @@ impl OllamaClient {
                 let message_id = message_id.clone();
                 let task_id = task_id.clone();
                 let mut buffer = String::new();
+                let mut is_first_chunk = true;
                 move |chunk_result| {
                     let message_id = message_id.clone();
                     let task_id = task_id.clone();
@@ -163,7 +171,9 @@ impl OllamaClient {
                                                         content,
                                                         &message_id,
                                                         &task_id,
+                                                        is_first_chunk,
                                                     )));
+                                                    is_first_chunk = false;
                                                 }
                                             }
                                         }
@@ -230,55 +240,30 @@ fn extract_messages_from_request(request: &api::Request) -> Vec<serde_json::Valu
     // Extract user input from the request
     if let Some(input) = &request.input {
         match &input.r#type {
-            Some(api::request::input::Type::GenerateOutput(generate_output)) => {
-                // Extract messages from the conversation history
-                for message in &generate_output.messages {
-                    if let Some(msg) = &message.message {
-                        match msg {
-                            api::message::Message::UserQuery(query) => {
+            Some(api::request::input::Type::UserInputs(user_inputs)) => {
+                for user_input in &user_inputs.inputs {
+                    if let Some(input) = &user_input.input {
+                        match input {
+                            api::request::input::user_inputs::user_input::Input::UserQuery(query) => {
                                 messages.push(serde_json::json!({
                                     "role": "user",
                                     "content": query.query,
                                 }));
                             }
-                            api::message::Message::AgentOutput(output) => {
-                                messages.push(serde_json::json!({
-                                    "role": "assistant",
-                                    "content": output.text,
-                                }));
+                            api::request::input::user_inputs::user_input::Input::CliAgentUserQuery(cli_query) => {
+                                if let Some(query) = &cli_query.user_query {
+                                    messages.push(serde_json::json!({
+                                        "role": "user",
+                                        "content": query.query,
+                                    }));
+                                }
                             }
-                            // Skip other message types for now
                             _ => {}
                         }
                     }
                 }
             }
             _ => {}
-        }
-    }
-
-    // If we only have the system message, the request probably has no conversation
-    // history yet — just pass through with a generic user message placeholder
-    if messages.len() == 1 {
-        // Try to extract the raw query from any available input context
-        if let Some(input) = &request.input {
-            match &input.r#type {
-                Some(api::request::input::Type::GenerateOutput(gen)) => {
-                    for msg in &gen.messages {
-                        if let Some(api::message::Message::UserQuery(q)) =
-                            msg.message.as_ref()
-                        {
-                            if !q.query.is_empty() {
-                                messages.push(serde_json::json!({
-                                    "role": "user",
-                                    "content": q.query,
-                                }));
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
         }
     }
 
